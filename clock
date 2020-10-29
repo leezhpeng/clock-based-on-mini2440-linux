@@ -1,0 +1,429 @@
+#include <unistd.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <linux/fb.h>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
+#include "lzp7.h"
+#include "ddl.h"
+#include <math.h>
+#include <sys/time.h>
+#include <time.h>
+#define RED_COLOR 0x0000
+#define GREEN_COLOR 0x0000
+#define BLUE_COLOR 0x0000
+#define PI 3.1415926
+char *fbp = 0;
+/*
+ * framebuffer application code, the start code of Linux GUI application
+ * compile :
+ *          $/usr/local/arm/2.95.3/bin/arm-linux-gcc -o fbtest fbtest.c
+ *          $cp fbtest /tftpboot/examples
+ * run in target:
+ *          #mount 192.168.1.180:/tftpboot/ /mnt/nfs
+ *          #cd /mnt/nfs/examples
+ *          #./fbtest
+ */
+void PutPixel(unsigned int x, unsigned int y, unsigned int c)
+{
+	if (x < 800 && y < 480)
+	{
+		*(fbp + y * 800 * 2 + x * 2) = 0x00FF & c;
+		*(fbp + y * 800 * 2 + x * 2 + 1) = (0xFF00 & c) >> 8;
+	}
+}
+void Glib_Line(int x1, int y1, int x2, int y2, int color)
+{
+	int dx, dy, e;
+	dx = x2 - x1;
+	dy = y2 - y1;
+	if (dx >= 0)
+	{
+		if (dy >= 0) // dy>=0
+		{
+			if (dx >= dy) // 1/8 octant
+			{
+				e = dy - dx / 2;
+				while (x1 <= x2)
+				{
+					PutPixel(x1, y1, color);
+					if (e > 0)
+					{
+						y1 += 1;
+						e -= dx;
+					}
+					x1 += 1;
+					e += dy;
+				}
+			}
+			else // 2/8 octant
+			{
+				e = dx - dy / 2;
+				while (y1 <= y2)
+				{
+					PutPixel(x1, y1, color);
+					if (e > 0)
+					{
+						x1 += 1;
+						e -= dy;
+					}
+					y1 += 1;
+					e += dx;
+				}
+			}
+		}
+		else // dy<0
+		{
+			dy = -dy;	  // dy=abs(dy)
+			if (dx >= dy) // 8/8 octant
+			{
+				e = dy - dx / 2;
+				while (x1 <= x2)
+				{
+					PutPixel(x1, y1, color);
+					if (e > 0)
+					{
+						y1 -= 1;
+						e -= dx;
+					}
+					x1 += 1;
+					e += dy;
+				}
+			}
+			else // 7/8 octant
+			{
+				e = dx - dy / 2;
+				while (y1 >= y2)
+				{
+					PutPixel(x1, y1, color);
+					if (e > 0)
+					{
+						x1 += 1;
+						e -= dy;
+					}
+					y1 -= 1;
+					e += dx;
+				}
+			}
+		}
+	}
+	else //dx<0
+	{
+		dx = -dx;	 //dx=abs(dx)
+		if (dy >= 0) // dy>=0
+		{
+			if (dx >= dy) // 4/8 octant
+			{
+				e = dy - dx / 2;
+				while (x1 >= x2)
+				{
+					PutPixel(x1, y1, color);
+					if (e > 0)
+					{
+						y1 += 1;
+						e -= dx;
+					}
+					x1 -= 1;
+					e += dy;
+				}
+			}
+			else // 3/8 octant
+			{
+				e = dx - dy / 2;
+				while (y1 <= y2)
+				{
+					PutPixel(x1, y1, color);
+					if (e > 0)
+					{
+						x1 -= 1;
+						e -= dy;
+					}
+					y1 += 1;
+					e += dx;
+				}
+			}
+		}
+		else // dy<0
+		{
+			dy = -dy;	  // dy=abs(dy)
+			if (dx >= dy) // 5/8 octant
+			{
+				e = dy - dx / 2;
+				while (x1 >= x2)
+				{
+					PutPixel(x1, y1, color);
+					if (e > 0)
+					{
+						y1 -= 1;
+						e -= dx;
+					}
+					x1 -= 1;
+					e += dy;
+				}
+			}
+			else // 6/8 octant
+			{
+				e = dx - dy / 2;
+				while (y1 >= y2)
+				{
+					PutPixel(x1, y1, color);
+					if (e > 0)
+					{
+						x1 -= 1;
+						e -= dy;
+					}
+					y1 -= 1;
+					e += dx;
+				}
+			}
+		}
+	}
+}
+
+// bool draw_line(int x1, int x2, int y1, int y2, int color)
+// {
+
+// }
+
+int main(int argc, char **argv)
+{
+	int fbfd = 0;
+	struct fb_var_screeninfo vinfo;
+	struct fb_fix_screeninfo finfo;
+	long int screensize = 0;
+	int config = -1, configH, configM, configS;
+	int x = 0, y = 0, k = 0;
+	int hx, hy, mx, my, sx, sy, hl, ml, sl, hc, mc, sc;
+	int hc_sec, mc_sec;
+	int h_alarm, m_alarm;
+	long int all_sec_alarm;
+	int alarm_duration;
+	clock_t clock_start, clock_end;
+	float hsta = 0.0, msta = 0.0, ssta = 0.0;
+	struct timeval startTime;
+	long long startTimesec, totalSec;
+	//long int location = 0;
+	// Open the file for reading and writing   打开设备文件
+	fbfd = open("/dev/fb0", O_RDWR);
+	if (!fbfd)
+	{
+		printf("Error: cannot open framebuffer device.\n");
+		exit(1);
+	}
+	printf("The framebuffer device was opened successfully.\n");
+	// Get fixed screen information   获取屏幕相关参数
+	if (ioctl(fbfd, FBIOGET_FSCREENINFO, &finfo))
+	{
+		printf("Error reading fixed information.\n");
+		exit(2);
+	}
+	// Get variable screen information
+	if (ioctl(fbfd, FBIOGET_VSCREENINFO, &vinfo))
+	{
+		printf("Error reading variable information.\n");
+		exit(3);
+	}
+	// Figure out the size of the screen in bytes  计算屏幕缓冲区大小
+	screensize = vinfo.xres * vinfo.yres * vinfo.bits_per_pixel / 8;
+	printf("%dx%d, %dbpp, screensize = %ld\n", vinfo.xres, vinfo.yres, vinfo.bits_per_pixel, screensize);
+	// Map the device to memory   映射屏幕缓冲区到用户地址空间
+	fbp = (char *)mmap(0, screensize, PROT_READ | PROT_WRITE, MAP_SHARED,
+					   fbfd, 0);
+	if ((int)fbp == -1)
+	{
+		printf("Error: failed to map framebuffer device to memory.\n");
+		exit(4);
+	}
+	printf("The framebuffer device was mapped to memory successfully.\n");
+	x = 100;
+	y = 100;						// Where we are going to put the pixel
+	if (vinfo.bits_per_pixel == 16) // 16bpp only
+	{
+		// 16bpp framebuffer test
+		// printf("16bpp framebuffer test\n");
+		// printf("two bytes in fbp is a pixel of LCD, just set the value of fbp to put color to LCD\n");
+		// printf("byte format:\n");
+		// printf("  bit:| 15 14 13 12 11 | 10 9 8 7 6 5 | 4 3 2 1 0 |\n");
+		// printf("      |     red        |   green      |    blue   |\n");
+		for (y = 0; y < 480; y++)
+		{
+			for (x = 0; x < 800; x++)
+			{
+				*(fbp + y * 800 * 2 + x * 2) = Image[k];
+				*(fbp + y * 800 * 2 + x * 2 + 1) = Image[k + 1];
+				k += 2;
+			}
+		}
+
+		hx = 400; // g:横坐标
+		hy = 180; // g:纵坐标
+		hl = 100; // g:线长
+		mx = 400;
+		my = 160;
+		ml = 120;
+		sx = 400;
+		sy = 140;
+		sl = 150;
+
+		hsta = 0.00004629;
+		msta = 0.000555556;
+		ssta = 0.0333;
+		// set alarm time
+		printf("set alarm time\n");
+		printf("please input hour for alarm:\n");
+		scanf("%d", &h_alarm);
+		// g:超过正常小时数，报错
+		while (h_alarm < 0 || h_alarm > 23)
+		{
+			printf("error input\n");
+			printf("please input hour for alarm:\n");
+			scanf("%d", &h_alarm);
+		}
+		// g:超过正常分钟数，报错
+		printf("please input minute for alarm:\n");
+		scanf("%d", &m_alarm);
+		while (m_alarm < 0 || m_alarm > 59)
+		{
+			printf("error input\n");
+			printf("please input minute for alarm:\n");
+			scanf("%d", &m_alarm);
+		}
+		all_sec_alarm = h_alarm * 3600 + m_alarm * 60; // count the total seconds of alarm clock
+		printf("set alarm duration, unit s\n");
+		scanf("%d", &alarm_duration);
+		while (config != 0 && config != 1)
+		{
+			printf("set time? yes:1  no:0\n");
+			scanf("%d", &config);
+		}
+		
+		if (config == 1)
+		{
+			printf("please input hour:\n");
+			scanf("%d", &hc);
+			while (hc < 0 || hc_sec > 23)
+			{
+				printf("input Error\n");
+				printf("please input hour:\n");
+				scanf("%d", &hc);
+			}
+			printf("please input minute:\n");
+			scanf("%d", &mc);
+			while (mc < 0 || mc > 59)
+			{
+				printf("input Error\n");
+				printf("please input minute:\n");
+				scanf("%d", &mc);
+			}
+			printf("please input second:\n");
+			scanf("%d", &sc);
+			while (sc < 0 || sc > 59)
+			{
+				printf("input Error\n");
+				printf("please input second:\n");
+				scanf("%d", &sc);
+			}
+			/* printf("hc:%d",hc);
+                printf("mc:%d",mc);
+                printf("sc:%d",sc);
+                printf("print over");  
+    		hc = hc % 12;
+		printf("hc:%d",hc);
+                printf("mc:%d",mc);
+                printf("sc:%d",sc);*/
+			totalSec = hc * 3600 + mc * 60 + sc;
+			hc = totalSec % 43200;
+			mc = totalSec % 3600;
+			printf("print over");
+		}
+		else
+		{
+			if(gettimeofday(&startTime, NULL) == -1)
+				exit(5);
+			startTimesec = startTime.tv_sec;
+			sc = startTimesec % 60;
+			mc = startTimesec % 3600;
+			hc = startTimesec % 43200;
+		}
+		while (1)
+		{
+			// clock_start = clock();
+
+			// TODO:恢复上一步被覆盖的像素点
+			k = 0;
+			for (y = 0; y < 480; y++)
+			{
+				for (x = 0; x < 800; x++)
+				{
+					*(fbp + y * 800 * 2 + x * 2) = Image[k];
+					*(fbp + y * 800 * 2 + x * 2 + 1) = Image[k + 1];
+					k += 2;
+				}
+			}
+			clock_start = clock();
+			// g:绘制指针
+			// Glib_Line(400, 240, hx, hy, 0xFFFF);
+			// Glib_Line(400, 240, mx, my, 0xFFFF);
+			// Glib_Line(400, 240, sx, sy, 0xFFFF);
+			hx = (int)(400 + hl * sin(hc * hsta * PI));
+			hy = (int)(240 - hl * cos(hc * hsta * PI));
+			mx = (int)(400 + ml * sin(mc * msta * PI));
+			my = (int)(240 - ml * cos(mc * msta * PI));
+			sx = (int)(400 + sl * sin(sc * ssta * PI));
+			sy = (int)(240 - sl * cos(sc * ssta * PI));
+			// Glib_Line(400, 240, hx, hy, 0xFFFF);
+			// Glib_Line(400, 240, mx, my, 0xFFFF);
+			// Glib_Line(400, 240, sx, sy, 0xFFFF);
+			Glib_Line(400, 240, hx, hy, RED_COLOR);
+			Glib_Line(400, 240, mx, my, GREEN_COLOR);
+			Glib_Line(400, 240, sx, sy, BLUE_COLOR);
+			hc++;
+			mc++;
+			sc++;
+			clock_end = clock();
+			sleep(1 - (double)((clock_end - clock_start) / 1000));
+			if (hc - all_sec_alarm >= 0 && hc - all_sec_alarm <= alarm_duration)
+			{
+				// printf("Time comes!");
+				k = 0;
+				for (y = 0; y < 480; y++)
+				{
+					for (x = 0; x < 800; x++)
+					{
+						*(fbp + y * 800 * 2 + x * 2) = Image_ddl[k];
+						*(fbp + y * 800 * 2 + x * 2 + 1) = Image_ddl[k + 1];
+						k += 2;
+					}
+				}
+				
+				sleep(alarm_duration);
+				hc += alarm_duration;
+				mc += alarm_duration;
+				sc += alarm_duration;
+			}
+			if (sc == 60)
+			{
+				sc = 0;
+			}
+			if (mc == 3600)
+			{
+				mc = 0;
+			}
+			if (hc == 43200)
+			{
+				hc = 0;
+			}
+			// TODO:检测按键的语句
+		}
+		printf("Red line\n");
+		sleep(2);
+	}
+	else
+	{
+		printf("16bpp only!!!\n");
+	}
+	munmap(fbp, screensize);
+	close(fbfd);
+	return 0;
+}
